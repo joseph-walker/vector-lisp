@@ -1,0 +1,5 @@
+main =
+    distance "A" "A"
+
+distance =
+    "todo"

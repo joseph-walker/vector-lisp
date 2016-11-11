@@ -1,4 +1,5 @@
 main =
-    (abs (test 3))
+    echo distance
 
-test = (* -5)
+distance =
+    "todo"

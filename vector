@@ -27,12 +27,12 @@ class Language extends Module
     protected static function __tokenize(string $chars)
     {
         $tokenize = Lambda::compose(
-            Strings::split(' '),
+            Strings::trim(),
             Strings::replace('(', ' ( '),
             Strings::replace(')', ' ) ')
         );
 
-        return $tokenize($chars);
+        return preg_split('/\s+/', $tokenize($chars));
     }
 
     /**
@@ -42,33 +42,64 @@ class Language extends Module
      */
     protected static function __atom($token)
     {
+        // keywords
+        $keywords = [
+            '*' => Math::multiply(),
+            '/' => Math::divide(),
+            '=>' => Arrays::setIndex(),
+            '+' => Math::add(),
+            '-' => Math::subtract(),
+            '.' => Lambda::dot(),
+            ':' => Arrays::cons(),
+            'array' => [],
+            'codepoints' => function ($codepoints) {
+                return implode(Arrays::map('IntlChar::chr', Arrays::map(function ($a) {
+                    return (int) $a;
+                }, explode(',', mb_substr($codepoints, 2)))));
+            },
+            'echo' => function ($string) {
+                echo $string;
+            },
+        ];
+
+        if (isset($keywords[$token])) {
+            return $keywords[$token];
+        }
+
+        // native php functions + currying
+        if (function_exists($token)) {
+            return Module::curry(function (...$args) use ($token) {
+                return call_user_func_array($token, $args);
+            });
+        }
+
+        // UserLand vector functions
+        if (isset(static::$functions[$token])) {
+            return self::eval(self::parse(static::$functions[$token]));
+        }
+
+        // primitives
         if (filter_var($token, FILTER_VALIDATE_INT)) {
             return (int) $token;
         } elseif (is_float($token)) {
             return (float) $token;
-        } elseif ($token === '*') {
-            return Math::multiply();
-        } elseif ($token === '+') {
-            return Math::add();
-        } elseif (strpos($token, '.') !== false) {
+        } elseif (strpos($token, '<>') !== false) {
+            //string
+            return $token;
+        }
+
+        // modules
+        if (strpos($token, '.') !== false) {
             $parts = explode('.', $token);
 
             $class = '\\' . implode('\\', array_slice($parts, 0, -1));
             $method = Arrays::last($parts);
 
             return $class::using($method);
-        } elseif (method_exists(self::class, '__' . $token)) {
-            // check for function
-            return self::using($token);
-        } elseif (function_exists($token)) {
-            return Module::curry(function (...$args) use ($token) {
-                return call_user_func_array($token, $args);
-            });
-        } elseif (isset(static::$functions[$token])) {
-            return self::eval(self::parse(static::$functions[$token]));
         }
 
-        throw new Exception($token . ' not defined');
+        error_log("'$token'" . ' not defined');
+        exit(1);
     }
 
 
@@ -112,11 +143,33 @@ class Language extends Module
 
 $program = file_get_contents($argv[1]);
 
+// strings to binaries macro
+function mbStringToArray($string) {
+    $array = [];
+    $strlen = mb_strlen($string);
+
+    while ($strlen) {
+        $array[] = mb_substr($string, 0, 1, 'UTF-8');
+        $string = mb_substr($string, 1, $strlen, 'UTF-8');
+        $strlen = mb_strlen($string);
+    }
+
+    return $array;
+};
+
+$program = preg_replace_callback('/"(.*?)"/u', function ($match) {
+    return '(codepoints <>' . implode(',', array_map('IntlChar::ord', mbStringToArray($match[1]))) . ')';
+}, $program);
+
+// arrays macro
+
 // program structure
 $parts = Arrays::map(
     Lambda::compose(
         Arrays::map(Strings::trim()),
-        Strings::split('=')
+        function ($arg) {
+            return preg_split('/\s+=\s+/', $arg);
+        }
     ),
     Strings::split("\n\n", $program)
 );
@@ -126,11 +179,11 @@ Arrays::map(function ($part) {
     list($name, $body) = $part;
 
     if ($name === 'main') {
-        Language::$main = $body;
+        Language::$main = '(' . $body . ')';
         return;
     }
 
-    Language::$functions[$name] = $body;
+    Language::$functions[$name] = '(' . $body . ')';
 }, $parts);
 
 /**
@@ -144,7 +197,7 @@ function readFromTokens(array &$tokens)
         throw new Exception('unexpected EOF while reading');
     }
 
-    $token = Arrays::head($tokens);
+    $token = Strings::trim(Arrays::head($tokens));
     $tokens = Arrays::tail($tokens);
 
     if ($token === '(') {
