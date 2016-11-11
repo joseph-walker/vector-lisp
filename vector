@@ -1,0 +1,174 @@
+#!/usr/bin/env php
+<?php
+
+use Vector\Core\Module;
+use Vector\Lib\Arrays;
+use Vector\Lib\Lambda;
+use Vector\Lib\Math;
+use Vector\Lib\Strings;
+
+require __DIR__ . '/vendor/autoload.php';
+
+/**
+ * @method static mixed tokenize() tokenize(string $chars) Return the tokens for the program.
+ * @method static mixed atom() atom($token)
+ * @method static mixed eval() eval($ast)
+ * @method static mixed parse() parse($program)
+ */
+class Language extends Module
+{
+    public static $main;
+    public static $functions = [];
+
+    /**
+     * @param string $chars
+     * @return mixed
+     */
+    protected static function __tokenize(string $chars)
+    {
+        $tokenize = Lambda::compose(
+            Strings::split(' '),
+            Strings::replace('(', ' ( '),
+            Strings::replace(')', ' ) ')
+        );
+
+        return $tokenize($chars);
+    }
+
+    /**
+     * @param $token
+     * @return mixed
+     * @throws Exception
+     */
+    protected static function __atom($token)
+    {
+        if (filter_var($token, FILTER_VALIDATE_INT)) {
+            return (int) $token;
+        } elseif (is_float($token)) {
+            return (float) $token;
+        } elseif ($token === '*') {
+            return Math::multiply();
+        } elseif ($token === '+') {
+            return Math::add();
+        } elseif (strpos($token, '.') !== false) {
+            $parts = explode('.', $token);
+
+            $class = '\\' . implode('\\', array_slice($parts, 0, -1));
+            $method = Arrays::last($parts);
+
+            return $class::using($method);
+        } elseif (method_exists(self::class, '__' . $token)) {
+            // check for function
+            return self::using($token);
+        } elseif (function_exists($token)) {
+            return Module::curry(function (...$args) use ($token) {
+                return call_user_func_array($token, $args);
+            });
+        } elseif (isset(static::$functions[$token])) {
+            return self::eval(self::parse(static::$functions[$token]));
+        }
+
+        throw new Exception($token . ' not defined');
+    }
+
+
+
+    /**
+     * @param $program
+     * @return mixed
+     */
+    protected static function __parse($program)
+    {
+        $tokens = self::tokenize($program);
+
+        return readFromTokens($tokens);
+    }
+
+    /**
+     * @param array $ast
+     * @return array|mixed
+     */
+    protected static function __eval($ast)
+    {
+        if (!is_array($ast)) {
+            return $ast;
+        }
+
+        $head = Arrays::head($ast);
+
+        if (is_callable($head)) {
+            return Arrays::foldl(
+                function ($f, $item) {
+                    return Lambda::apply($f, $item);
+                },
+                $head,
+                Arrays::map(self::eval(), Arrays::tail($ast))
+            );
+        }
+
+        return $head;
+    }
+}
+
+$program = file_get_contents($argv[1]);
+
+// program structure
+$parts = Arrays::map(
+    Lambda::compose(
+        Arrays::map(Strings::trim()),
+        Strings::split('=')
+    ),
+    Strings::split("\n\n", $program)
+);
+
+// load the program
+Arrays::map(function ($part) {
+    list($name, $body) = $part;
+
+    if ($name === 'main') {
+        Language::$main = $body;
+        return;
+    }
+
+    Language::$functions[$name] = $body;
+}, $parts);
+
+/**
+ * @param array $tokens
+ * @return array
+ * @throws Exception
+ */
+function readFromTokens(array &$tokens)
+{
+    if (Arrays::length($tokens) === 0) {
+        throw new Exception('unexpected EOF while reading');
+    }
+
+    $token = Arrays::head($tokens);
+    $tokens = Arrays::tail($tokens);
+
+    if ($token === '(') {
+        $L = [];
+
+        while (Arrays::head($tokens) !== ')') {
+            $L = Arrays::cons(readFromTokens($tokens), $L);
+        };
+
+        $tokens = Arrays::tail($tokens);
+
+        return $L;
+    } elseif ($token === ')') {
+        throw new Exception('unexpected )');
+    } else {
+        return Language::atom($token);
+    }
+}
+
+// run the program
+print_r(
+    Language::eval(
+        Language::parse(
+            Language::$main
+        )
+    )
+);

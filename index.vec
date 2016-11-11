@@ -1,0 +1,4 @@
+main =
+    (abs (test 3))
+
+test = (* -5)
